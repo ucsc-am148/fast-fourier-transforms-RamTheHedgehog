@@ -273,40 +273,41 @@ def f4_kernel_L2(
     x_re = tl.load(x_re_ptr + in_offs, mask=mask_b, other=0.0)
     x_im = tl.load(x_im_ptr + in_offs, mask=mask_b, other=0.0)
 
-    # Load DFT matrix once
     f_offs_m = tl.arange(0, 16)[:, None]
     f_offs_n = tl.arange(0, 16)[None, :]
     f_idx = f_offs_m * 16 + f_offs_n
     F_re = tl.load(F_re_ptr + f_idx)
     F_im = tl.load(F_im_ptr + f_idx)
 
-    # Reshape to (BLOCK_B, 16, 16)
     x_re = tl.reshape(x_re, (BLOCK_B, 16, 16))
     x_im = tl.reshape(x_im, (BLOCK_B, 16, 16))
 
-    # Stage 0
     if STAGE_STOP > 0:
-        x_re = tl.permute(x_re, (0, 1, 2))
-        x_im = tl.permute(x_im, (0, 1, 2))
-        
-        # Flatten for tl.dot: (BLOCK_B * 16, 16)
-        x_re_2d = tl.reshape(x_re, (BLOCK_B * 16, 16))
-        x_im_2d = tl.reshape(x_im, (BLOCK_B * 16, 16))
-        
-        x_re_2d, x_im_2d = _cdot(x_re_2d, x_im_2d, F_re, F_im)
-        
-        # Reshape back to 3D
-        x_re = tl.reshape(x_re_2d, (BLOCK_B, 16, 16)).to(tl.float16)
-        x_im = tl.reshape(x_im_2d, (BLOCK_B, 16, 16)).to(tl.float16)
-
-    # Stage 1
-    if STAGE_STOP > 1:
+        # Move target transform axis (d0) to the end for tl.dot
         x_re = tl.permute(x_re, (0, 2, 1))
         x_im = tl.permute(x_im, (0, 2, 1))
         
+        # Flatten to 2D for tl.dot reduction
+        x_re_flat = tl.reshape(x_re, (BLOCK_B * 16, 16))
+        x_im_flat = tl.reshape(x_im, (BLOCK_B * 16, 16))
+        
+        x_re_flat, x_im_flat = _cdot(x_re_flat, x_im_flat, F_re, F_im)
+        
+        x_re = tl.reshape(x_re_flat, (BLOCK_B, 16, 16))
+        x_im = tl.reshape(x_im_flat, (BLOCK_B, 16, 16))
+        
+        # Swap back: axis layout is now (b, e1, d1)
+        x_re = tl.permute(x_re, (0, 2, 1))
+        x_im = tl.permute(x_im, (0, 2, 1))
+        
+        x_re = x_re.to(tl.float16)
+        x_im = x_im.to(tl.float16)
+
+    if STAGE_STOP > 1:
+        # Load twiddles transposed (e1, d1) to match our x alignment (b, e1, d1)
         tw_offs_m = tl.arange(0, 16)[:, None]
         tw_offs_n = tl.arange(0, 16)[None, :]
-        tw_idx = 1 * 256 + tw_offs_m * 16 + tw_offs_n 
+        tw_idx = 1 * 256 + tw_offs_n * 16 + tw_offs_m 
         
         tw_re = tl.load(tw_re_ptr + tw_idx)
         tw_im = tl.load(tw_im_ptr + tw_idx)
@@ -317,17 +318,21 @@ def f4_kernel_L2(
         nx_re = x_re * tw_re - x_im * tw_im
         nx_im = x_re * tw_im + x_im * tw_re
         
-        # Flatten for tl.dot
-        nx_re_2d = tl.reshape(nx_re, (BLOCK_B * 16, 16))
-        nx_im_2d = tl.reshape(nx_im, (BLOCK_B * 16, 16))
+        # d1 is currently pos 2. No permute needed, we just flatten directly.
+        nx_re_flat = tl.reshape(nx_re, (BLOCK_B * 16, 16))
+        nx_im_flat = tl.reshape(nx_im, (BLOCK_B * 16, 16))
         
-        x_re_2d, x_im_2d = _cdot(nx_re_2d, nx_im_2d, F_re, F_im)
+        x_re_flat, x_im_flat = _cdot(nx_re_flat, nx_im_flat, F_re, F_im)
         
-        x_re = tl.reshape(x_re_2d, (BLOCK_B, 16, 16)).to(tl.float16)
-        x_im = tl.reshape(x_im_2d, (BLOCK_B, 16, 16)).to(tl.float16)
+        x_re = tl.reshape(x_re_flat, (BLOCK_B, 16, 16))
+        x_im = tl.reshape(x_im_flat, (BLOCK_B, 16, 16))
         
+        # Final layout requires (b, e0, e1), so we swap (b, e1, e0)
         x_re = tl.permute(x_re, (0, 2, 1))
         x_im = tl.permute(x_im, (0, 2, 1))
+        
+        x_re = x_re.to(tl.float16)
+        x_im = x_im.to(tl.float16)
 
     x_re = tl.reshape(x_re, (BLOCK_B, 256))
     x_im = tl.reshape(x_im, (BLOCK_B, 256))
@@ -363,7 +368,7 @@ def dft_kernel(
     offs_r_pad = tl.arange(0, 16)
     in_offs_pad = offs_b[:, None] * R + offs_r_pad[None, :]
     
-    # Mask both dimensions, and also explicitly check against R for padding zero-fill
+    # Mask both dimensions, explicitly bounding R to insert zero-padding naturally
     mask_pad = (offs_b[:, None] < rows) & (offs_r_pad[None, :] < R)
 
     x_re_pad = tl.load(x_re_ptr + in_offs_pad, mask=mask_pad, other=0.0)
@@ -378,19 +383,20 @@ def dft_kernel(
 
     out_re, out_im = _cdot(x_re_pad, x_im_pad, M_re, M_im)
     
-    # Extract the true R results back out from the padded matmul
-    y_re = tl.reshape(out_re, (BLOCK_B, 16))[:, 0:R].to(tl.float16)
-    y_im = tl.reshape(out_im, (BLOCK_B, 16))[:, 0:R].to(tl.float16)
+    # Keep as explicit 16-columns; avoid dynamic slice arrays 
+    y_re = tl.reshape(out_re, (BLOCK_B, 16)).to(tl.float16)
+    y_im = tl.reshape(out_im, (BLOCK_B, 16)).to(tl.float16)
 
-    offs_r_in = tl.arange(0, R)
+    offs_r_out = tl.arange(0, 16)
     if STORE_T:
         b_outer = offs_b // M
         m_inner = offs_b % M
-        out_offs = b_outer[:, None] * (R * M) + offs_r_in[None, :] * M + m_inner[:, None]
+        out_offs = b_outer[:, None] * (R * M) + offs_r_out[None, :] * M + m_inner[:, None]
     else:
-        out_offs = offs_b[:, None] * R + offs_r_in[None, :]
+        out_offs = offs_b[:, None] * R + offs_r_out[None, :]
 
-    mask_store = (offs_b[:, None] < rows) & (offs_r_in[None, :] < R)
+    # We bound by R here on the store. The zero padding calculated past R gets dropped.
+    mask_store = (offs_b[:, None] < rows) & (offs_r_out[None, :] < R)
     tl.store(y_re_ptr + out_offs, y_re, mask=mask_store)
     tl.store(y_im_ptr + out_offs, y_im, mask=mask_store)
 
@@ -502,16 +508,8 @@ def _lookup_tw(plan, m0, M, N_i):
 def f3_launch(in_re, in_im, out_re, out_im, mid_re, mid_im, plan, B):
     N1, N2 = plan['N1'], plan['N2']
     
-    def get_plan_vars(suffix, n):
-        # Dynamically map the keys depending on what the grading harness generated
-        for prefix in [f'tw{suffix}', f'tw_N{suffix}', f'tw_{n}', 'tw']:
-            if f'{prefix}_re' in plan:
-                p_prefix = prefix.replace('tw', 'perm')
-                return plan[f'{prefix}_re'], plan[f'{prefix}_im'], plan[p_prefix]
-        raise KeyError(f"Could not find twiddles for suffix {suffix}. Keys available: {list(plan.keys())}")
-
-    tw1_re, tw1_im, perm1 = get_plan_vars('1', N1)
-    tw2_re, tw2_im, perm2 = get_plan_vars('2', N2)
+    tw1_re, tw1_im, perm1 = plan['tw_re_n1'], plan['tw_im_n1'], plan['perm_n1']
+    tw2_re, tw2_im, perm2 = plan['tw_re_n2'], plan['tw_im_n2'], plan['perm_n2']
     
     # 1. T1 (transpose): x[b, n2, n1] -> A[b, n1, n2]
     _transpose(in_re, in_im, mid_re, mid_im, B, N2, N1)
@@ -521,7 +519,7 @@ def f3_launch(in_re, in_im, out_re, out_im, mid_re, mid_im, plan, B):
         mid_re, mid_im, out_re, out_im,
         tw2_re, tw2_im, perm2,
         plan['bt_re'], plan['bt_im'],
-        N1, N1 * N2, N2, int(math.log2(N2)),
+        N1, N1 * N2, N2, plan['LOG2_N2'],
         BAILEY_EPILOGUE=True, STRIDED_STORE=False
     )
     
@@ -533,7 +531,7 @@ def f3_launch(in_re, in_im, out_re, out_im, mid_re, mid_im, plan, B):
         mid_re, mid_im, out_re, out_im,
         tw1_re, tw1_im, perm1,
         tw1_re, tw1_im, # sentinels
-        N2, N1 * N2, N1, int(math.log2(N1)),
+        N2, N1 * N2, N1, plan['LOG2_N1'],
         BAILEY_EPILOGUE=False, STRIDED_STORE=True
     )
 
