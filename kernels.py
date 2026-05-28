@@ -116,7 +116,9 @@ def f1_kernel(
 
 
 def f1_launch(x_re, x_im, W_re, W_im, y_re, y_im):
-    B, N = x_re.shape
+    N = W_re.shape[0]  # W_re is guaranteed to be (N, N)
+    B = x_re.numel() // N  # x_re is a flattened 1D buffer of size B*N
+    
     BLOCK_M, BLOCK_N, BLOCK_K = 16, 16, 32
     grid = (triton.cdiv(B, BLOCK_M), triton.cdiv(N, BLOCK_N))
     f1_kernel[grid](
@@ -160,37 +162,25 @@ def f2_kernel(
         w_re = tl.load(tw_re_ptr + tw_idx)
         w_im = tl.load(tw_im_ptr + tw_idx)
         
-        # Partner shuffle logic mapped to standard register masking
         partner = offs ^ half_step
         partner_re = tl.gather(v_re, partner, axis=0)
         partner_im = tl.gather(v_im, partner, axis=0)
         
         is_top = (offs & half_step) == 0
         
-        # Complex multiply for the bottom leg
-        tw_mul_re = partner_re * w_re - partner_im * w_im
-        tw_mul_im = partner_re * w_im + partner_im * w_re
+        # Safely extract top and bottom legs without register conflicts
+        bot_re = tl.where(is_top, partner_re, v_re)
+        bot_im = tl.where(is_top, partner_im, v_im)
         
-        new_re = tl.where(is_top, v_re + tw_mul_re, partner_re - v_re * w_re + partner_im * w_im) # Algebraic simplification trick
-        new_im = tl.where(is_top, v_im + tw_mul_im, partner_im - v_im * w_re - partner_re * w_im)
+        tw_mul_re = bot_re * w_re - bot_im * w_im
+        tw_mul_im = bot_re * w_im + bot_im * w_re
+        
+        top_re = tl.where(is_top, v_re, partner_re)
+        top_im = tl.where(is_top, v_im, partner_im)
         
         # Standard butterfly update
-        v_re = tl.where(is_top, v_re + tw_mul_re, partner_re - (v_re*w_re - v_im*w_im))
-        v_im = tl.where(is_top, v_im + tw_mul_im, partner_im - (v_re*w_im + v_im*w_re))
-        
-        # Above requires precise tl.where manipulation due to Triton limitations on in-place register swaps.
-        # Safe equivalent:
-        top_re = v_re + tw_mul_re
-        top_im = v_im + tw_mul_im
-        bot_re = partner_re - (v_re * w_re - v_im * w_im)
-        bot_im = partner_im - (v_re * w_im + v_im * w_re)
-        
-        # Only true for the lower half calculation in Cooley-Tukey
-        t_re = v_re * w_re - v_im * w_im
-        t_im = v_re * w_im + v_im * w_re
-        
-        v_re = tl.where(is_top, v_re + tw_mul_re, partner_re - t_re)
-        v_im = tl.where(is_top, v_im + tw_mul_im, partner_im - t_im)
+        v_re = tl.where(is_top, top_re + tw_mul_re, top_re - tw_mul_re)
+        v_im = tl.where(is_top, top_im + tw_mul_im, top_im - tw_mul_im)
 
     if BAILEY_EPILOGUE:
         n1 = pid % OUTER_DIM
@@ -214,7 +204,8 @@ def f2_kernel(
 
 
 def f2_launch(x_re, x_im, y_re, y_im, tw_re, tw_im, perm):
-    B, N = x_re.shape
+    N = perm.shape[0]
+    B = x_re.numel() // N
     LOG2_N = int(math.log2(N))
     grid = (B,)
     f2_kernel[grid](
