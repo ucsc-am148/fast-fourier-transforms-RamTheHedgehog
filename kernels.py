@@ -43,7 +43,7 @@ def _cdot(a_re, a_im, b_re, b_im):
     return y_re, y_im
 
 
-# =============================================================================
+# ============================================================================= 
 # Chunk factorization for F6 / F7
 # =============================================================================
 
@@ -62,7 +62,7 @@ def f6_factor(N: int) -> list[int]:
             N = 1
     return chunks
 
-f7_factor = f6_factor   # F7 reuses F6's chunk recipe
+f7_factor = f6_factor 
 
 
 # =============================================================================
@@ -71,9 +71,9 @@ f7_factor = f6_factor   # F7 reuses F6's chunk recipe
 
 @triton.jit
 def f1_kernel(
-    x_re_ptr, x_im_ptr,    # (B, N) fp16
-    W_re_ptr, W_im_ptr,    # (N, N) fp16; W[n, k]
-    y_re_ptr, y_im_ptr,    # (B, N) fp32
+    x_re_ptr, x_im_ptr,   
+    W_re_ptr, W_im_ptr,   
+    y_re_ptr, y_im_ptr,   
     B,
     N: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -116,8 +116,8 @@ def f1_kernel(
 
 
 def f1_launch(x_re, x_im, W_re, W_im, y_re, y_im):
-    N = W_re.shape[0]  # W_re is guaranteed to be (N, N)
-    B = x_re.numel() // N  # x_re is a flattened 1D buffer of size B*N
+    N = W_re.shape[0]  
+    B = x_re.numel() // N 
     
     BLOCK_M, BLOCK_N, BLOCK_K = 16, 16, 32
     grid = (triton.cdiv(B, BLOCK_M), triton.cdiv(N, BLOCK_N))
@@ -133,11 +133,11 @@ def f1_launch(x_re, x_im, W_re, W_im, y_re, y_im):
 
 @triton.jit
 def f2_kernel(
-    x_re_ptr, x_im_ptr,        # (B, N) fp32 input
-    y_re_ptr, y_im_ptr,        # (B, N) fp32 output (layout depends on STRIDED_STORE)
-    tw_re_ptr, tw_im_ptr,      # (N/2,) fp32 radix-2 twiddles
-    perm_ptr,                  # (N,) int32 bit-reversal index
-    bt_re_ptr, bt_im_ptr,      # (OUTER_DIM, N) fp32 Bailey twiddles (BAILEY_EPILOGUE only)
+    x_re_ptr, x_im_ptr,        
+    y_re_ptr, y_im_ptr,        
+    tw_re_ptr, tw_im_ptr,      
+    perm_ptr,                 
+    bt_re_ptr, bt_im_ptr,      
     OUTER_DIM, N_TOTAL,
     N: tl.constexpr,
     LOG2_N: tl.constexpr,
@@ -149,12 +149,12 @@ def f2_kernel(
     offs = tl.arange(0, N)
     rev_offs = tl.load(perm_ptr + offs)
     
-    # Load input using bit-reversed indices
+    
     in_offs = pid * N + rev_offs
     v_re = tl.load(x_re_ptr + in_offs)
     v_im = tl.load(x_im_ptr + in_offs)
 
-    # In-register radix-2 butterfly stages
+    
     for s in tl.static_range(LOG2_N):
         half_step = 1 << s
         
@@ -168,7 +168,7 @@ def f2_kernel(
         
         is_top = (offs & half_step) == 0
         
-        # Safely extract top and bottom legs without register conflicts
+        
         bot_re = tl.where(is_top, partner_re, v_re)
         bot_im = tl.where(is_top, partner_im, v_im)
         
@@ -178,7 +178,7 @@ def f2_kernel(
         top_re = tl.where(is_top, v_re, partner_re)
         top_im = tl.where(is_top, v_im, partner_im)
         
-        # Standard butterfly update
+        
         v_re = tl.where(is_top, top_re + tw_mul_re, top_re - tw_mul_re)
         v_im = tl.where(is_top, top_im + tw_mul_im, top_im - tw_mul_im)
 
@@ -211,7 +211,7 @@ def f2_launch(x_re, x_im, y_re, y_im, tw_re, tw_im, perm):
     f2_kernel[grid](
         x_re, x_im, y_re, y_im, 
         tw_re, tw_im, perm, 
-        tw_re, tw_im, # sentinels
+        tw_re, tw_im, 
         1, 0, N, LOG2_N, 
         BAILEY_EPILOGUE=False, STRIDED_STORE=False
     )
@@ -223,8 +223,8 @@ def f2_launch(x_re, x_im, y_re, y_im, tw_re, tw_im, perm):
 
 @triton.jit
 def transpose_kernel(
-    x_re_ptr, x_im_ptr,     # (B*R*C,) fp16 or fp32 input
-    y_re_ptr, y_im_ptr,     # (B*R*C,) fp16 or fp32 output
+    x_re_ptr, x_im_ptr,     
+    y_re_ptr, y_im_ptr,    
     R, C,
     BLOCK_R: tl.constexpr,
     BLOCK_C: tl.constexpr,
@@ -254,10 +254,10 @@ def transpose_kernel(
 
 @triton.jit
 def f4_kernel_L2(
-    x_re_ptr, x_im_ptr,    # (B, 256) fp16
-    y_re_ptr, y_im_ptr,    # (B, 256) or (B//M, 256, M) fp16
-    F_re_ptr, F_im_ptr,    # (16, 16) fp16 -- F_16 DFT matrix
-    tw_re_ptr, tw_im_ptr,  # (L=2, 16, 16) fp16 stacked stage twiddles
+    x_re_ptr, x_im_ptr,   
+    y_re_ptr, y_im_ptr,    
+    F_re_ptr, F_im_ptr,    
+    tw_re_ptr, tw_im_ptr,  
     B, M,
     BLOCK_B: tl.constexpr,
     STAGE_STOP: tl.constexpr,
@@ -283,11 +283,11 @@ def f4_kernel_L2(
     x_im = tl.reshape(x_im, (BLOCK_B, 16, 16))
 
     if STAGE_STOP > 0:
-        # Move target transform axis (d0) to the end for tl.dot
+
         x_re = tl.permute(x_re, (0, 2, 1))
         x_im = tl.permute(x_im, (0, 2, 1))
         
-        # Flatten to 2D for tl.dot reduction
+        
         x_re_flat = tl.reshape(x_re, (BLOCK_B * 16, 16))
         x_im_flat = tl.reshape(x_im, (BLOCK_B * 16, 16))
         
@@ -296,7 +296,7 @@ def f4_kernel_L2(
         x_re = tl.reshape(x_re_flat, (BLOCK_B, 16, 16))
         x_im = tl.reshape(x_im_flat, (BLOCK_B, 16, 16))
         
-        # Swap back: axis layout is now (b, e1, d1)
+        
         x_re = tl.permute(x_re, (0, 2, 1))
         x_im = tl.permute(x_im, (0, 2, 1))
         
@@ -304,7 +304,7 @@ def f4_kernel_L2(
         x_im = x_im.to(tl.float16)
 
     if STAGE_STOP > 1:
-        # Load twiddles transposed (e1, d1) to match our x alignment (b, e1, d1)
+        
         tw_offs_m = tl.arange(0, 16)[:, None]
         tw_offs_n = tl.arange(0, 16)[None, :]
         tw_idx = 1 * 256 + tw_offs_n * 16 + tw_offs_m 
@@ -318,7 +318,7 @@ def f4_kernel_L2(
         nx_re = x_re * tw_re - x_im * tw_im
         nx_im = x_re * tw_im + x_im * tw_re
         
-        # d1 is currently pos 2. No permute needed, we just flatten directly.
+        
         nx_re_flat = tl.reshape(nx_re, (BLOCK_B * 16, 16))
         nx_im_flat = tl.reshape(nx_im, (BLOCK_B * 16, 16))
         
@@ -327,7 +327,7 @@ def f4_kernel_L2(
         x_re = tl.reshape(x_re_flat, (BLOCK_B, 16, 16))
         x_im = tl.reshape(x_im_flat, (BLOCK_B, 16, 16))
         
-        # Final layout requires (b, e0, e1), so we swap (b, e1, e0)
+        
         x_re = tl.permute(x_re, (0, 2, 1))
         x_im = tl.permute(x_im, (0, 2, 1))
         
@@ -354,9 +354,9 @@ def f4_kernel_L2(
 
 @triton.jit
 def dft_kernel(
-    x_re_ptr, x_im_ptr,     # (rows, R) fp16
-    y_re_ptr, y_im_ptr,     # (rows, R) or (rows//M, R, M) fp16
-    M_re_ptr, M_im_ptr,     # (16, 16) fp16 padded-R DFT matrix
+    x_re_ptr, x_im_ptr,    
+    y_re_ptr, y_im_ptr,     
+    M_re_ptr, M_im_ptr,     
     rows, M,
     R: tl.constexpr,
     BLOCK_B: tl.constexpr,
@@ -368,7 +368,7 @@ def dft_kernel(
     offs_r_pad = tl.arange(0, 16)
     in_offs_pad = offs_b[:, None] * R + offs_r_pad[None, :]
     
-    # Mask both dimensions, explicitly bounding R to insert zero-padding naturally
+    
     mask_pad = (offs_b[:, None] < rows) & (offs_r_pad[None, :] < R)
 
     x_re_pad = tl.load(x_re_ptr + in_offs_pad, mask=mask_pad, other=0.0)
@@ -383,7 +383,7 @@ def dft_kernel(
 
     out_re, out_im = _cdot(x_re_pad, x_im_pad, M_re, M_im)
     
-    # Keep as explicit 16-columns; avoid dynamic slice arrays 
+    
     y_re = tl.reshape(out_re, (BLOCK_B, 16)).to(tl.float16)
     y_im = tl.reshape(out_im, (BLOCK_B, 16)).to(tl.float16)
 
@@ -395,7 +395,7 @@ def dft_kernel(
     else:
         out_offs = offs_b[:, None] * R + offs_r_out[None, :]
 
-    # We bound by R here on the store. The zero padding calculated past R gets dropped.
+    
     mask_store = (offs_b[:, None] < rows) & (offs_r_out[None, :] < R)
     tl.store(y_re_ptr + out_offs, y_re, mask=mask_store)
     tl.store(y_im_ptr + out_offs, y_im, mask=mask_store)
@@ -407,9 +407,9 @@ def dft_kernel(
 
 @triton.jit
 def bailey_scale_kernel(
-    x_re_ptr, x_im_ptr,     # (rows*m0*M,) fp16 input (logical (rows, m0, M))
-    y_re_ptr, y_im_ptr,     # (rows*m0*M,) fp16 output ((rows, m0, M) or (rows, M, m0))
-    tw_re_ptr, tw_im_ptr,   # (m0, M) fp16
+    x_re_ptr, x_im_ptr,    
+    y_re_ptr, y_im_ptr,     
+    tw_re_ptr, tw_im_ptr,   
     m0, M,
     BLOCK_M0: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -433,7 +433,7 @@ def bailey_scale_kernel(
     t_re = tl.load(tw_re_ptr + tw_offs, mask=mask)
     t_im = tl.load(tw_im_ptr + tw_offs, mask=mask)
 
-    # Cast to fp32 for the math, back to fp16 for store
+    
     v_re_f32 = v_re.to(tl.float32)
     v_im_f32 = v_im.to(tl.float32)
     t_re_f32 = t_re.to(tl.float32)
@@ -511,10 +511,10 @@ def f3_launch(in_re, in_im, out_re, out_im, mid_re, mid_im, plan, B):
     tw1_re, tw1_im, perm1 = plan['tw_re_n1'], plan['tw_im_n1'], plan['perm_n1']
     tw2_re, tw2_im, perm2 = plan['tw_re_n2'], plan['tw_im_n2'], plan['perm_n2']
     
-    # 1. T1 (transpose): x[b, n2, n1] -> A[b, n1, n2]
+  
     _transpose(in_re, in_im, mid_re, mid_im, B, N2, N1)
     
-    # 2. F2-A: length-N2 FFT over (B*N1) signals with Bailey epilogue
+    
     f2_kernel[(B * N1,)](
         mid_re, mid_im, out_re, out_im,
         tw2_re, tw2_im, perm2,
@@ -523,10 +523,10 @@ def f3_launch(in_re, in_im, out_re, out_im, mid_re, mid_im, plan, B):
         BAILEY_EPILOGUE=True, STRIDED_STORE=False
     )
     
-    # 3. T2 (transpose): Z[b, n1, k2] -> Z'[b, k2, n1]
+    
     _transpose(out_re, out_im, mid_re, mid_im, B, N1, N2)
     
-    # 4. F2-B: length-N1 FFT over (B*N2) signals with strided store
+    
     f2_kernel[(B * N2,)](
         mid_re, mid_im, out_re, out_im,
         tw1_re, tw1_im, perm1,
@@ -543,17 +543,17 @@ def f3_launch(in_re, in_im, out_re, out_im, mid_re, mid_im, plan, B):
 def f5_launch(in_re, in_im, b0_re, b0_im, b1_re, b1_im, b2_re, b2_im, plan, B):
     N1, N2 = plan['N1'], plan['N2']
     
-    # T1 -> b0
+    
     _transpose(in_re, in_im, b0_re, b0_im, B, N2, N1)
-    # FFT-A -> b1
+    
     _fft_chunk(b0_re, b0_im, b1_re, b1_im, B * N1, N2, plan)
-    # Scale -> b0
+    
     _scale(b1_re, b1_im, b0_re, b0_im, B, N1, N2, plan['bt_re'], plan['bt_im'])
-    # T2 -> b1
+    
     _transpose(b0_re, b0_im, b1_re, b1_im, B, N1, N2)
-    # FFT-B -> b2
+    
     _fft_chunk(b1_re, b1_im, b2_re, b2_im, B * N2, N1, plan)
-    # T3 -> b0 (final)
+    
     _transpose(b2_re, b2_im, b0_re, b0_im, B, N2, N1)
 
 
@@ -571,27 +571,27 @@ def _f6_rec(cur_re, cur_im, rows, chunks, plan, cyc):
     M = math.prod(chunks[1:])
     N_i = m0 * M
 
-    # T1
+    
     mid_re, mid_im = cyc.next()
     _transpose(cur_re, cur_im, mid_re, mid_im, rows, M, m0)
     
-    # Recurse
+    
     rec_re, rec_im = _f6_rec(mid_re, mid_im, rows * m0, chunks[1:], plan, cyc)
     
-    # Scale
+    
     sc_re, sc_im = cyc.next()
     tw_re, tw_im = _lookup_tw(plan, m0, M, N_i)
     _scale(rec_re, rec_im, sc_re, sc_im, rows, m0, M, tw_re, tw_im, store_t=False)
     
-    # T2
+    
     t2_re, t2_im = cyc.next()
     _transpose(sc_re, sc_im, t2_re, t2_im, rows, m0, M)
     
-    # FFT-m0
+    
     fft_re, fft_im = cyc.next()
     _fft_chunk(t2_re, t2_im, fft_re, fft_im, rows * M, m0, plan, store_t=False)
     
-    # T3
+    
     out_re, out_im = cyc.next()
     _transpose(fft_re, fft_im, out_re, out_im, rows, M, m0)
     
@@ -608,19 +608,19 @@ def _f7_rec(cur_re, cur_im, rows, chunks, plan, cyc):
     M = math.prod(chunks[1:])
     N_i = m0 * M
 
-    # T1
+    
     mid_re, mid_im = cyc.next()
     _transpose(cur_re, cur_im, mid_re, mid_im, rows, M, m0)
     
-    # Recurse
+    
     rec_re, rec_im = _f7_rec(mid_re, mid_im, rows * m0, chunks[1:], plan, cyc)
     
-    # FUSED Scale + T2 (store_t=True skips the explicit T2 step)
+    
     sc_re, sc_im = cyc.next()
     tw_re, tw_im = _lookup_tw(plan, m0, M, N_i)
     _scale(rec_re, rec_im, sc_re, sc_im, rows, m0, M, tw_re, tw_im, store_t=True)
     
-    # FUSED FFT-m0 + T3 (store_t=True, passing M bypasses T3)
+    
     out_re, out_im = cyc.next()
     _fft_chunk(sc_re, sc_im, out_re, out_im, rows * M, m0, plan, M=M, store_t=True)
     
