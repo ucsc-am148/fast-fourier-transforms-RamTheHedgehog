@@ -39,7 +39,7 @@ def make_radix2_twiddles(
     return tw_re, tw_im
 
 
-# =============================================================================
+# ============================================================================= 
 # Pattern 2: per-stage radix-16 twiddles  (F4; reused by F5/F6/F7 via F4)
 # =============================================================================
 
@@ -97,8 +97,7 @@ def make_radix16_twiddles(
             target_label = ('e', L - 1 - j)
             idx = axes.index(target_label)
             
-            # Extract the specific base-16 digit of the flat column index `c`
-            # corresponding to the position of `target_label` in the axis list.
+            
             val = (c // (16 ** (L - 2 - idx))) % 16
             t += val * (16 ** j)
             
@@ -174,7 +173,7 @@ def make_dft_R_padded(
     M_re = torch.cos(angle)
     M_im = torch.sin(angle)
     
-    # Only the first R columns contain the F_R twiddles, the rest are zeroed.
+    
     M_re[:, R:] = 0.0
     M_im[:, R:] = 0.0
     
@@ -191,7 +190,7 @@ def bit_reversal_perm(N: int, device: str = 'cuda') -> torch.Tensor:
     rev = torch.zeros(N, dtype=torch.int32, device=device)
     idx = torch.arange(N, dtype=torch.int32, device=device)
     
-    # Vectorized bit-reversal using bitwise shifts
+    
     for i in range(n_bits):
         rev |= ((idx >> i) & 1) << (n_bits - 1 - i)
         
